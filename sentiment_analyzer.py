@@ -6,12 +6,12 @@ from typing import List, Optional
 
 # LangChain Imports
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.pydantic_v1 import BaseModel, Field
-from langchain_google_vertexai import VertexAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.tools import YahooFinanceNewsTool
 from langchain.output_parsers import PydanticOutputParser
-from langchain.runnables import RunnablePassthrough, RunnableLambda
+from langchain.runnables import RunnablePassthrough
 
 # MLflow Integration
 import mlflow
@@ -21,12 +21,10 @@ from mlflow.langchain.callback import MlflowCallbackHandler
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Google Cloud and Vertex AI Configuration
-PROJECT_ID = os.getenv("VERTEX_AI_PROJECT")
-LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1")
-
-if not PROJECT_ID:
-    sys.exit("Error: VERTEX_AI_PROJECT environment variable is not set.")
+# Google API Key Configuration
+# The script will automatically look for the GOOGLE_API_KEY environment variable.
+if not os.getenv("GOOGLE_API_KEY"):
+    sys.exit("Error: GOOGLE_API_KEY environment variable is not set.")
 
 # MLflow Configuration
 MLFLOW_TRACKING_URI = "sqlite:///mlflow.db"
@@ -34,7 +32,6 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 mlflow.set_experiment("Market Sentiment Analysis")
 
 # --- Pydantic Model for Structured Output ---
-# Define the desired JSON output structure using Pydantic
 class SentimentProfile(BaseModel):
     """A structured profile of market sentiment for a company."""
     company_name: str = Field(description="The name of the company being analyzed.")
@@ -57,8 +54,7 @@ def get_stock_ticker(company_name: str) -> str:
     ticker_prompt = PromptTemplate.from_template(
         "What is the stock market ticker for {company_name}? Respond with only the ticker symbol."
     )
-    # Using a simple LLM call for this task is robust
-    llm = VertexAI(model_name="gemini-1.5-flash-001", temperature=0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-latest", temperature=0, convert_system_message_to_human=True)
     ticker_chain = ticker_prompt | llm | StrOutputParser()
     ticker = ticker_chain.invoke({"company_name": company_name}).strip()
     logging.info(f"Found ticker: {ticker}")
@@ -68,17 +64,14 @@ def fetch_news(ticker: str) -> str:
     """Fetches recent news articles for a given stock ticker."""
     logging.info(f"Fetching news for ticker: {ticker}")
     try:
-        # Use YahooFinanceNewsTool to get the latest news
         tool = YahooFinanceNewsTool()
         news_results = tool.run(ticker)
-        # Check if news_results is a list of dictionaries
         if isinstance(news_results, list) and all(isinstance(i, dict) for i in news_results):
-             # Format for LLM processing
             return "\n\n".join(
                 f"Title: {item.get('title', 'N/A')}\n"
                 f"Published: {item.get('published', 'N/A')}\n"
                 f"Summary: {item.get('summary', 'No summary available.')}"
-                for item in news_results[:5] # Limit to top 5 articles for conciseness
+                for item in news_results[:5]
             )
         else:
             logging.warning(f"No structured news found for {ticker}. Returning raw output.")
@@ -91,12 +84,10 @@ def fetch_news(ticker: str) -> str:
 
 def build_sentiment_analyzer_chain():
     """Constructs the full LangChain pipeline for sentiment analysis."""
-    # 1. Initialize the LLM for the main analysis task
-    # Note: The user requested 'Gemini-2.0-flash', which is not a current model name.
-    # Using 'gemini-1.5-flash-001' as the modern, high-performance equivalent.
-    llm = VertexAI(model_name="gemini-1.5-flash-001", temperature=0.3, max_output_tokens=2048)
+    # 1. MODIFIED: Initialize the LLM using ChatGoogleGenerativeAI
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, convert_system_message_to_human=True)
 
-    # 2. Set up the Pydantic parser to enforce JSON output structure
+    # 2. Set up the Pydantic parser
     parser = PydanticOutputParser(pydantic_object=SentimentProfile)
 
     # 3. Create the main analysis prompt template
@@ -117,19 +108,14 @@ News Articles:
     )
 
     # 4. Define the complete chain using LangChain Expression Language (LCEL)
-    # This pipeline structure is clear and shows data flow at each step.
     chain = (
-        # Start with the initial input dictionary
         {"company_name": RunnablePassthrough(), "stock_code": RunnablePassthrough(), "news_desc": RunnablePassthrough()}
         | RunnablePassthrough.assign(
-            # Step 1: Get Stock Code (using our custom function)
             stock_code=lambda x: get_stock_ticker(x["company_name"])
         )
         | RunnablePassthrough.assign(
-            # Step 2: Fetch News (using the newly found stock code)
             news_desc=lambda x: fetch_news(x["stock_code"])
         )
-        # Step 3: Run the sentiment analysis prompt, LLM, and parser
         | analysis_prompt
         | llm
         | parser
@@ -139,42 +125,31 @@ News Articles:
 # --- Execution ---
 
 if __name__ == "__main__":
-    # Get company name from command-line arguments
     if len(sys.argv) < 2:
-        print("Usage: python sentiment_analyzer.py \"<Company Name>\"")
+        print("Usage: python sentiment_analyzer_api_key.py \"<Company Name>\"")
         sys.exit(1)
 
     company_input = sys.argv[1]
 
-    # Initialize MLflow Callback for automatic tracing
     mlflow_callback_handler = MlflowCallbackHandler()
 
-    # Start an MLflow run to log everything
     with mlflow.start_run() as run:
         run_id = run.info.run_id
         logging.info(f"Starting MLflow Run ID: {run_id}")
         logging.info(f"To view logs, run: mlflow ui --backend-store-uri {MLFLOW_TRACKING_URI}")
 
-        # Log input parameters
         mlflow.log_param("company_name", company_input)
 
         try:
-            # Build the chain
             analyzer_chain = build_sentiment_analyzer_chain()
-
-            # Invoke the chain with MLflow callbacks enabled
-            # The callback will automatically trace each step (LLM calls, tool usage)
             result = analyzer_chain.invoke(
                 company_input,
                 config={"callbacks": [mlflow_callback_handler]}
             )
-
-            # Log results to MLflow
             mlflow.log_metric("sentiment_confidence", result.confidence_score)
             mlflow.log_dict(result.dict(), "sentiment_profile.json")
             mlflow.set_tag("status", "SUCCESS")
 
-            # Print the final result
             print("\n--- Market Sentiment Analysis Result ---")
             print(json.dumps(result.dict(), indent=2))
             print("\n--- End of Report ---")
