@@ -73,7 +73,7 @@ Execute the Python script, passing the company name as an argument.
 
 **Example:**
 ```bash
-python sentiment_analyzer_api_key.py "Microsoft"
+python sentiment_analyzer.py "Microsoft"
 ```
 
 After the script finishes, refresh the MLflow UI to see the new run, including its parameters, metrics, and detailed traces.
