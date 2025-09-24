@@ -7,22 +7,21 @@ from typing import List, Optional
 # LangChain Imports
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.pydantic_v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.tools import YahooFinanceNewsTool
 from langchain.output_parsers import PydanticOutputParser
-from langchain.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough
 
 # MLflow Integration
 import mlflow
-from mlflow.langchain.callback import MlflowCallbackHandler
+mlflow.langchain.autolog()
 
 # --- Configuration ---
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Google API Key Configuration
-# The script will automatically look for the GOOGLE_API_KEY environment variable.
 if not os.getenv("GOOGLE_API_KEY"):
     sys.exit("Error: GOOGLE_API_KEY environment variable is not set.")
 
@@ -54,7 +53,7 @@ def get_stock_ticker(company_name: str) -> str:
     ticker_prompt = PromptTemplate.from_template(
         "What is the stock market ticker for {company_name}? Respond with only the ticker symbol."
     )
-    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-latest", temperature=0, convert_system_message_to_human=True)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0, convert_system_message_to_human=True)
     ticker_chain = ticker_prompt | llm | StrOutputParser()
     ticker = ticker_chain.invoke({"company_name": company_name}).strip()
     logging.info(f"Found ticker: {ticker}")
@@ -84,8 +83,8 @@ def fetch_news(ticker: str) -> str:
 
 def build_sentiment_analyzer_chain():
     """Constructs the full LangChain pipeline for sentiment analysis."""
-    # 1. MODIFIED: Initialize the LLM using ChatGoogleGenerativeAI
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, convert_system_message_to_human=True)
+    # 1. Initialize the LLM using ChatGoogleGenerativeAI
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.3, convert_system_message_to_human=True)
 
     # 2. Set up the Pydantic parser
     parser = PydanticOutputParser(pydantic_object=SentimentProfile)
@@ -131,7 +130,7 @@ if __name__ == "__main__":
 
     company_input = sys.argv[1]
 
-    mlflow_callback_handler = MlflowCallbackHandler()
+    # mlflow_callback_handler = MlflowCallbackHandler()
 
     with mlflow.start_run() as run:
         run_id = run.info.run_id
@@ -142,10 +141,7 @@ if __name__ == "__main__":
 
         try:
             analyzer_chain = build_sentiment_analyzer_chain()
-            result = analyzer_chain.invoke(
-                company_input,
-                config={"callbacks": [mlflow_callback_handler]}
-            )
+            result = analyzer_chain.invoke(company_input)
             mlflow.log_metric("sentiment_confidence", result.confidence_score)
             mlflow.log_dict(result.dict(), "sentiment_profile.json")
             mlflow.set_tag("status", "SUCCESS")
